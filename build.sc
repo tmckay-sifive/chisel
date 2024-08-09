@@ -9,6 +9,8 @@ import mill.contrib.jmh.JmhModule
 import $file.common
 import $file.tests
 
+import common.Platform
+
 object v {
   val pluginScalaCrossVersions = Seq(
     "2.13.11",
@@ -203,7 +205,32 @@ trait ChiselPublishModule extends PublishModule {
   def publishVersion = "5.0-SNAPSHOT"
 }
 
-object circtpanamabinding extends CIRCTPanamaBinding
+object jextract extends Module {
+
+  // https://download.java.net/java/early_access/jextract/21/1/openjdk-21-jextract+1-2_macos-x64_bin.tar.gz
+  // https://download.java.net/java/early_access/jextract/21/1/openjdk-21-jextract+1-2_linux-x64_bin.tar.gz
+  // https://download.java.net/java/early_access/jextract/21/1/openjdk-21-jextract+1-2_windows-x64_bin.tar.gz
+  def platformName = Platform.getPlatform() match {
+    case Platform.Linux => "linux"
+    case Platform.Macos => "macos"
+  }
+
+  def downloadUrl =
+    s"https://download.java.net/java/early_access/jextract/21/1/openjdk-21-jextract+1-2_$platformName-x64_bin.tar.gz"
+
+  def bin: T[PathRef] = T {
+    def tarballName = "jextract.tar.gz"
+    def path = T.dest
+
+    val file = T.dest / tarballName
+    os.write(file, requests.get.stream(downloadUrl))
+    PathRef(file)
+  }
+}
+
+object circtpanamabinding extends CIRCTPanamaBinding {
+  def jextractBinary: T[PathRef] = T { PathRef(os.pwd) }
+}
 
 trait CIRCTPanamaBinding extends common.CIRCTPanamaBindingModule with ChiselPublishModule {
 
