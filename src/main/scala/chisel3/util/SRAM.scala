@@ -1,19 +1,22 @@
 package chisel3.util
 
 import chisel3._
-
 import chisel3.internal.{Builder, NamedComponent}
 import chisel3.internal.binding.{FirrtlMemTypeBinding, SramPortBinding}
 import chisel3.internal.plugin.autoNameRecursively
 import chisel3.experimental.{OpaqueType, SourceInfo}
+import chisel3.experimental.hierarchy.{instantiable, public, Definition, Instance, Instantiate}
 import chisel3.internal.sourceinfo.{MemTransform, SourceInfoTransform}
 import chisel3.internal.firrtl.ir.{Arg, FirrtlMemory, LitIndex, Node, Ref, Slot}
 import chisel3.util.experimental.loadMemoryFromFileInline
 import chisel3.reflect.DataMirror
-import firrtl.annotations.MemoryLoadFileType
+import firrtl.annotations.{IsMember, MemoryLoadFileType}
+
 import scala.language.reflectiveCalls
 import scala.language.experimental.macros
 import chisel3.internal.firrtl.ir
+import chisel3.properties.Class.ClassDefinitionOps
+import chisel3.properties.{Class, ClassType, Path, Property}
 
 import scala.collection.immutable.{ListMap, VectorMap}
 
@@ -78,6 +81,45 @@ class MemoryReadWritePort[T <: Data](tpe: T, addrWidth: Int, masked: Boolean) ex
   }
 }
 
+@instantiable
+/** Object Module for SRAM, used for storing metadata of an SRAM. */
+class SRAMOM extends Class {
+  val depth:           Property[Int] = IO(Output(Property[Int]()))
+  val width:           Property[Int] = IO(Output(Property[Int]()))
+  val masked:          Property[Boolean] = IO(Output(Property[Boolean]()))
+  val read:            Property[Int] = IO(Output(Property[Int]()))
+  val write:           Property[Int] = IO(Output(Property[Int]()))
+  val readwrite:       Property[Int] = IO(Output(Property[Int]()))
+  val maskGranularity: Property[Int] = IO(Output(Property[Int]()))
+  val hierarchy:       Property[Path] = IO(Output(Property[Path]()))
+
+  @public
+  val depthIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val widthIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val maskedIn: Property[Boolean] = IO(Input(Property[Boolean]()))
+  @public
+  val readIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val writeIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val readwriteIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val maskGranularityIn: Property[Int] = IO(Input(Property[Int]()))
+  @public
+  val hierarchyIn: Property[Path] = IO(Input(Property[Path]()))
+
+  depth := depthIn
+  width := widthIn
+  masked := maskedIn
+  read := readIn
+  write := writeIn
+  readwrite := readwriteIn
+  maskGranularity := maskGranularityIn
+  hierarchy := hierarchyIn
+}
+
 /** A IO bundle of signals connecting to the ports of a memory, as requested by
   * `SRAMInterface.apply`.
   *
@@ -121,7 +163,10 @@ class SRAMInterface[T <: Data](
   private[chisel3] var _underlying: Option[HasTarget] = None
 
   /** Target information for annotating the underlying SRAM if it is known. */
-  def underlying: Option[HasTarget] = _underlying
+  def underlying:           Option[HasTarget] = _underlying
+  private val omDefinition: Definition[SRAMOM] = Instantiate.definition(new SRAMOM)
+  private val omType:       ClassType = omDefinition.getClassType
+  val om:                   Property[ClassType] = Property[omType.Type]()
 }
 
 /** A memory file with which to preload an [[SRAM]]
@@ -553,6 +598,24 @@ object SRAM {
       firrtlReadwritePort.wmode := memReadwritePort.isWrite
       assignMask(firrtlReadwritePort.wmask, memReadwritePort.mask)
     }
+
+    // Add metadata to the SRAM.
+    val omInstance: Instance[SRAMOM] = Instantiate(new SRAMOM)
+    omInstance.depthIn := Property(size)
+    omInstance.widthIn := Property(tpe.getWidth)
+    omInstance.maskedIn := Property(isVecMem)
+    omInstance.readIn := Property(numReadPorts)
+    omInstance.writeIn := Property(numWritePorts)
+    omInstance.readwriteIn := Property(numReadwritePorts)
+    omInstance.maskGranularityIn := Property(
+      Option
+        .when(isVecMem)(tpe match {
+          case t: Vec[_] => t.sample_element.getWidth
+        })
+        .getOrElse(0)
+    )
+    omInstance.hierarchyIn := Property(Path(mem))
+    _out.om := omInstance.getPropertyReference
 
     _out
   }
