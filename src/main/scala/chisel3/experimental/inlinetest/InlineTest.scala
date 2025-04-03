@@ -83,14 +83,21 @@ object TestHarnessGenerator {
 }
 
 private class TestGenerator[M <: RawModule, R](
-  dutName:              String,
-  val testName:         String,
-  testBody:             Instance[M] => R,
-  resetType:            Option[Module.ResetType.Type],
+  /** The index of this test in the order they were declared. */
+  val index: Int,
+  /** The user-provided name of the test. */
+  val testName: String,
+  /** The (eventually) legalized name for the DUT module */
+  dutName: () => String,
+  /** The body for this test, returns a result. */
+  testBody: Instance[M] => R,
+  /** The reset type of the DUT module. */
+  resetType: Option[Module.ResetType.Type],
+  /** The testharness generator. */
   testHarnessGenerator: TestHarnessGenerator[M, R]
 ) {
-  def generate(dutDefinition: Definition[M]) =
-    testHarnessGenerator.generate(new TestParameters(dutName, testName, dutDefinition, testBody, resetType))
+  def params(dutDefinition: Definition[M]) = new TestParameters(dutName(), testName, dutDefinition, testBody, resetType)
+  def generate(dutDefinition: Definition[M]) = testHarnessGenerator.generate(params(dutDefinition))
 }
 
 /** Provides methods to build unit testharnesses inline after this module is elaborated.
@@ -110,7 +117,27 @@ trait HasTests { module: RawModule =>
     builderContext.inlineTestIncluder.shouldElaborateTest(module.desiredName, testName)
 
   /** Generators for inline tests by name. */
-  private val testGenerators = new mutable.HashMap[String, (Int, TestGenerator[M, _])]
+  private val testGenerators = new mutable.HashMap[String, TestGenerator[M, _]]
+
+  lazy val moduleDefinition = module.toDefinition.asInstanceOf[Definition[M]]
+
+  /** Get the tests that will be elaborated if tests are enabled for this module. */
+  private def getTests: Seq[(TestParameters[M, _], Boolean)] =
+    testGenerators.values.toSeq.sortBy(_.index).map { test =>
+      (test.params(moduleDefinition), shouldElaborateTest(test.testName))
+    }
+
+  /** Call a function for each test after module elaboration.
+   *
+   *  @param fn function returning [[Unit]] that takes the test parameters and
+   *  whether or not the test will be elaborated
+   */
+  def foreachTest(fn: (TestParameters[M, _], Boolean) => Unit): Unit =
+    atModuleBodyEnd {
+      getTests.foreach { case (test, enabled) =>
+        fn(test, enabled)
+      }
+    }
 
   private val elaboratedTests = new mutable.HashMap[String, TestHarness[M, _]]
 
@@ -124,7 +151,7 @@ trait HasTests { module: RawModule =>
     *  testharness has clock and synchronous reset IOs and contains the test
     *  body.
     *
-    *  @param testBody the circuit to generate inside the testharness
+    *  @param testBody the circuit to elaborate inside the testharness
     */
   protected final def test[R](
     testName: String
@@ -134,14 +161,22 @@ trait HasTests { module: RawModule =>
       case _ => None
     }
     require(!testGenerators.contains(testName), s"test '${testName}' already declared")
-    val testGenerator = new TestGenerator(module.desiredName, testName, testBody, resetType, testHarnessGenerator)
-    testGenerators.addOne(testName -> (testGenerators.size, testGenerator))
+    val testGenerator =
+      new TestGenerator(
+        index = testGenerators.size,
+        testName,
+        () => module.name,
+        testBody,
+        resetType,
+        testHarnessGenerator
+      )
+    testGenerators.addOne(testName -> testGenerator)
   }
 
   afterModuleBuilt {
     if (elaborateTests) {
       lazy val moduleDefinition = module.toDefinition.asInstanceOf[Definition[M]]
-      testGenerators.values.toSeq.sortBy(_._1).foreach { case (_, t) =>
+      testGenerators.values.toSeq.sortBy(_.index).foreach { t =>
         if (shouldElaborateTest(t.testName)) {
           Definition {
             val testHarness = t.generate(moduleDefinition)
